@@ -19,6 +19,7 @@ On WSL2, use [`usbipd-win`](https://github.com/dorssel/usbipd-win) to pass the U
 ```sh
 # Windows PowerShell (admin)
 usbipd list
+usbipd bind --busid <busid>
 usbipd attach --wsl --busid <busid>
 ```
 
