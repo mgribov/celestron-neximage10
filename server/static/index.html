@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NexImage 10 Control Panel</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111;
+      color: #ddd;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    header {
+      background: #1a1a2e;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid #333;
+    }
+
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #7eb8f7; }
+
+    #status-badge {
+      margin-left: auto;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #333;
+      color: #aaa;
+    }
+
+    #status-badge.connected { background: #1a4a1a; color: #5d5; }
+    #status-badge.error { background: #4a1a1a; color: #f55; }
+
+    main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Video pane ── */
+    #video-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      position: relative;
+    }
+
+    #video-pane img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    #no-stream {
+      color: #555;
+      font-size: 1rem;
+      text-align: center;
+    }
+
+    #overlay-stats {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      font-size: 0.7rem;
+      color: #aaa;
+      background: rgba(0,0,0,0.6);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    /* ── Histogram ── */
+    #histogram-canvas {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.6);
+      border-radius: 4px;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 280px;
+      background: #1a1a1a;
+      border-left: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .section {
+      padding: 14px 16px;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    .section h2 {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #7eb8f7;
+      margin-bottom: 12px;
+    }
+
+    /* Format select */
+    select {
+      width: 100%;
+      background: #252525;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 0.85rem;
+      margin-bottom: 8px;
+    }
+
+    /* Control rows */
+    .control-row {
+      margin-bottom: 12px;
+    }
+
+    .control-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      margin-bottom: 4px;
+    }
+
+    .control-header label { color: #bbb; }
+    .control-header span { color: #7eb8f7; font-variant-numeric: tabular-nums; min-width: 50px; text-align: right; }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #7eb8f7;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-block;
+      padding: 7px 14px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 600;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+    .btn:active { opacity: 0.7; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+
+    .btn-primary { background: #2a6aad; color: #fff; }
+    .btn-danger  { background: #8b2020; color: #fff; }
+    .btn-success { background: #1e6b3a; color: #fff; }
+    .btn-sm { padding: 5px 10px; font-size: 0.78rem; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* Capture log */
+    #capture-log {
+      font-size: 0.72rem;
+      color: #777;
+      margin-top: 8px;
+      max-height: 80px;
+      overflow-y: auto;
+    }
+
+    #capture-log p { margin-bottom: 2px; }
+    #capture-log p.ok { color: #5d5; }
+    #capture-log p.err { color: #f55; }
+
+    /* File list */
+    #file-list {
+      font-size: 0.76rem;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+
+    #file-list a {
+      display: block;
+      color: #9ab;
+      text-decoration: none;
+      padding: 2px 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #file-list a:hover { color: #7eb8f7; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>NexImage 10 Control Panel</h1>
+  <div id="status-badge">Disconnected</div>
+</header>
+
+<main>
+  <!-- ── Video ── -->
+  <div id="video-pane">
+    <div id="no-stream">Stream not active — click <strong>Start Stream</strong></div>
+    <img id="stream-img" src="" alt="Live stream" style="display:none">
+    <div id="overlay-stats"></div>
+    <canvas id="histogram-canvas" width="128" height="64" style="display:none"></canvas>
+  </div>
+
+  <!-- ── Sidebar ── -->
+  <aside id="sidebar">
+
+    <!-- Stream control -->
+    <div class="section">
+      <h2>Stream</h2>
+      <div class="control-row">
+        <div class="control-header"><label>Resolution</label></div>
+        <select id="sel-resolution">
+          <option value="1920x1080">1920×1080 @ 30 fps</option>
+          <option value="1280x720">1280×720 @ 60 fps</option>
+          <option value="640x480">640×480 @ 90 fps</option>
+          <option value="2560x1440">2560×1440 @ 15 fps</option>
+          <option value="3072x2048">3072×2048 @ 10 fps</option>
+          <option value="3872x2764">3872×2764 @ 6 fps</option>
+        </select>
+      </div>
+      <div class="control-row">
+        <div class="control-header"><label>Pixel Format</label></div>
+        <select id="sel-format">
+          <option value="GRBG">GRBG (8-bit Bayer color)</option>
+          <option value="Y800">Y800 (8-bit mono)</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btn-start">Start Stream</button>
+        <button class="btn btn-danger"  id="btn-stop" disabled>Stop</button>
+      </div>
+    </div>
+
+    <!-- Camera controls -->
+    <div class="section">
+      <h2>Camera Controls</h2>
+
+      <div class="control-row">
+        <div class="control-header">
+          <label for="ctrl-exposure">Exposure (µs)</label>
+          <span id="val-exposure">1000</span>
+        </div>
+        <input type="range" id="ctrl-exposure" min="1" max="100000" value="1000" step="1">
+      </div>
+
+      <div class="control-row">
+        <div class="control-header">
+          <label for="ctrl-gain">Gain</label>
+          <span id="val-gain">0</span>
+        </div>
+        <input type="range" id="ctrl-gain" min="0" max="100" value="0">
+      </div>
+
+      <div class="control-row">
+        <div class="control-header">
+          <label for="ctrl-brightness">Brightness</label>
+          <span id="val-brightness">0</span>
+        </div>
+        <input type="range" id="ctrl-brightness" min="-64" max="64" value="0">
+      </div>
+
+      <button class="btn btn-sm btn-primary" id="btn-reload-controls" style="margin-top:4px">
+        Reload from Camera
+      </button>
+    </div>
+
+    <!-- Capture -->
+    <div class="section">
+      <h2>Capture</h2>
+      <div class="control-row">
+        <div class="control-header"><label>Format</label></div>
+        <select id="sel-capture-format">
+          <option value="png">PNG</option>
+          <option value="tiff">TIFF</option>
+          <option value="fits">FITS</option>
+        </select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" id="btn-capture">Capture Frame</button>
+      </div>
+      <div id="capture-log"></div>
+    </div>
+
+    <!-- Recording -->
+    <div class="section">
+      <h2>Recording</h2>
+      <div class="control-row">
+        <div class="control-header">
+          <label for="ctrl-duration">Duration (s)</label>
+          <span id="val-duration">10</span>
+        </div>
+        <input type="range" id="ctrl-duration" min="1" max="300" value="10">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" id="btn-record-start">Record SER</button>
+        <button class="btn btn-danger" id="btn-record-stop" disabled>Stop</button>
+      </div>
+      <div id="capture-log" style="margin-top:6px" id="record-log"></div>
+    </div>
+
+    <!-- File browser -->
+    <div class="section">
+      <h2>Saved Files</h2>
+      <div id="file-list">Loading…</div>
+      <button class="btn btn-sm btn-primary" id="btn-refresh-files" style="margin-top:8px">Refresh</button>
+    </div>
+
+  </aside>
+</main>
+
+<script>
+const API = '';  // same origin
+
+// ── Utility ──────────────────────────────────────────────────────────────────
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(API + path, opts);
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+function setStatus(text, cls) {
+  const el = document.getElementById('status-badge');
+  el.textContent = text;
+  el.className = cls || '';
+}
+
+// ── Stream ────────────────────────────────────────────────────────────────────
+
+const streamImg  = document.getElementById('stream-img');
+const noStream   = document.getElementById('no-stream');
+const overlayEl  = document.getElementById('overlay-stats');
+const histCanvas = document.getElementById('histogram-canvas');
+const histCtx    = histCanvas.getContext('2d');
+
+let streamActive = false;
+let frameCount = 0;
+let fpsTimer = null;
+
+document.getElementById('btn-start').addEventListener('click', async () => {
+  const res = document.getElementById('sel-resolution').value;
+  const [w, h] = res.split('x').map(Number);
+  const fmt = document.getElementById('sel-format').value;
+
+  try {
+    await apiFetch('/api/stream/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({width: w, height: h, pixel_format: fmt}),
+    });
+  } catch (e) {
+    setStatus('Error: ' + e.message, 'error');
+    return;
+  }
+
+  streamImg.src = '/stream.mjpeg?' + Date.now();
+  streamImg.style.display = '';
+  noStream.style.display  = 'none';
+  histCanvas.style.display = '';
+  streamActive = true;
+  frameCount = 0;
+
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled  = false;
+  setStatus('Streaming', 'connected');
+
+  streamImg.onload = () => {
+    frameCount++;
+    drawHistogram(streamImg);
+  };
+
+  fpsTimer = setInterval(() => {
+    overlayEl.textContent = `${frameCount} fps`;
+    frameCount = 0;
+  }, 1000);
+});
+
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  try { await apiFetch('/api/stream/stop', {method: 'POST'}); } catch {}
+  streamImg.src = '';
+  streamImg.style.display = 'none';
+  noStream.style.display  = '';
+  histCanvas.style.display = 'none';
+  streamActive = false;
+  clearInterval(fpsTimer);
+  overlayEl.textContent = '';
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled  = true;
+  setStatus('Stopped');
+});
+
+// ── Histogram ─────────────────────────────────────────────────────────────────
+
+function drawHistogram(imgEl) {
+  const W = histCanvas.width, H = histCanvas.height;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = W; offscreen.height = H;
+  const ctx2 = offscreen.getContext('2d');
+  ctx2.drawImage(imgEl, 0, 0, W, H);
+  const pixels = ctx2.getImageData(0, 0, W, H).data;
+
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const lum = (pixels[i] * 77 + pixels[i+1] * 150 + pixels[i+2] * 29) >> 8;
+    hist[lum]++;
+  }
+
+  const maxVal = Math.max(...hist);
+  histCtx.clearRect(0, 0, W, H);
+  histCtx.fillStyle = 'rgba(0,0,0,0.5)';
+  histCtx.fillRect(0, 0, W, H);
+  histCtx.fillStyle = '#7eb8f7';
+  for (let i = 0; i < 256; i++) {
+    const barH = Math.round((hist[i] / maxVal) * H);
+    const x = Math.floor(i * W / 256);
+    histCtx.fillRect(x, H - barH, Math.max(1, Math.floor(W / 256)), barH);
+  }
+}
+
+// ── Camera Controls ───────────────────────────────────────────────────────────
+
+const controls = [
+  {id: 'exposure',   name: 'exposure_absolute', el: null, valEl: null},
+  {id: 'gain',       name: 'gain',              el: null, valEl: null},
+  {id: 'brightness', name: 'brightness',        el: null, valEl: null},
+];
+
+controls.forEach(c => {
+  c.el    = document.getElementById('ctrl-' + c.id);
+  c.valEl = document.getElementById('val-' + c.id);
+
+  c.el.addEventListener('input', () => {
+    c.valEl.textContent = c.el.value;
+  });
+
+  let debounce;
+  c.el.addEventListener('change', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => setControl(c.name, Number(c.el.value)), 150);
+  });
+});
+
+async function setControl(name, value) {
+  try {
+    await apiFetch('/api/controls/' + name, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value}),
+    });
+  } catch (e) {
+    console.warn('Control error:', e);
+  }
+}
+
+async function reloadControls() {
+  try {
+    const data = await apiFetch('/api/controls');
+    controls.forEach(c => {
+      const info = data[c.name];
+      if (!info) return;
+      c.el.min   = info.minimum;
+      c.el.max   = info.maximum;
+      c.el.value = info.value;
+      c.valEl.textContent = info.value;
+    });
+  } catch (e) {
+    console.warn('Reload controls error:', e);
+  }
+}
+
+document.getElementById('btn-reload-controls').addEventListener('click', reloadControls);
+reloadControls();
+
+// ── Capture ───────────────────────────────────────────────────────────────────
+
+const captureLog = document.getElementById('capture-log');
+
+function logCapture(msg, ok = true) {
+  const p = document.createElement('p');
+  p.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
+  p.className   = ok ? 'ok' : 'err';
+  captureLog.prepend(p);
+  if (captureLog.children.length > 20) captureLog.lastChild.remove();
+}
+
+document.getElementById('btn-capture').addEventListener('click', async () => {
+  const fmt = document.getElementById('sel-capture-format').value;
+  try {
+    const data = await apiFetch('/api/capture?format=' + fmt, {method: 'POST'});
+    logCapture('Saved: ' + data.filename);
+    refreshFiles();
+  } catch (e) {
+    logCapture(e.message, false);
+  }
+});
+
+// ── Recording ─────────────────────────────────────────────────────────────────
+
+const durationEl = document.getElementById('ctrl-duration');
+document.getElementById('val-duration').textContent = durationEl.value;
+durationEl.addEventListener('input', () => {
+  document.getElementById('val-duration').textContent = durationEl.value;
+});
+
+document.getElementById('btn-record-start').addEventListener('click', async () => {
+  const duration = Number(durationEl.value);
+  try {
+    await apiFetch('/api/record/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({duration_seconds: duration}),
+    });
+    document.getElementById('btn-record-start').disabled = true;
+    document.getElementById('btn-record-stop').disabled  = false;
+  } catch (e) {
+    logCapture('Record error: ' + e.message, false);
+  }
+});
+
+document.getElementById('btn-record-stop').addEventListener('click', async () => {
+  try {
+    const data = await apiFetch('/api/record/stop', {method: 'POST'});
+    logCapture('Recorded: ' + data.filename);
+    refreshFiles();
+  } catch (e) {
+    logCapture(e.message, false);
+  }
+  document.getElementById('btn-record-start').disabled = false;
+  document.getElementById('btn-record-stop').disabled  = true;
+});
+
+// ── File Browser ──────────────────────────────────────────────────────────────
+
+const fileList = document.getElementById('file-list');
+
+async function refreshFiles() {
+  try {
+    const data = await apiFetch('/api/files');
+    if (!data.files.length) {
+      fileList.textContent = 'No files yet.';
+      return;
+    }
+    fileList.innerHTML = '';
+    data.files.forEach(f => {
+      const a = document.createElement('a');
+      a.href = '/files/' + encodeURIComponent(f);
+      a.textContent = f;
+      a.download = f;
+      fileList.appendChild(a);
+    });
+  } catch (e) {
+    fileList.textContent = 'Error loading files.';
+  }
+}
+
+document.getElementById('btn-refresh-files').addEventListener('click', refreshFiles);
+refreshFiles();
+</script>
+
+</body>
+</html>
