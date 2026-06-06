@@ -312,7 +312,7 @@
         <button class="btn btn-success" id="btn-record-start">Record SER</button>
         <button class="btn btn-danger" id="btn-record-stop" disabled>Stop</button>
       </div>
-      <div id="capture-log" style="margin-top:6px" id="record-log"></div>
+      <div id="record-log" style="margin-top:6px"></div>
     </div>
 
     <!-- File browser -->
@@ -436,10 +436,13 @@ function drawHistogram(imgEl) {
 
 // ── Camera Controls ───────────────────────────────────────────────────────────
 
+// `name` is the API config_name (snake_case). `scale` converts the raw V4L2
+// value to the unit shown in the UI: exposure_time_absolute is in 100µs units
+// but the slider is labelled µs, so scale = 100.
 const controls = [
-  {id: 'exposure',   name: 'exposure_absolute', el: null, valEl: null},
-  {id: 'gain',       name: 'gain',              el: null, valEl: null},
-  {id: 'brightness', name: 'brightness',        el: null, valEl: null},
+  {id: 'exposure',   name: 'exposure_time_absolute', scale: 100, el: null, valEl: null},
+  {id: 'gain',       name: 'gain',                    scale: 1,   el: null, valEl: null},
+  {id: 'brightness', name: 'brightness',              scale: 1,   el: null, valEl: null},
 ];
 
 controls.forEach(c => {
@@ -475,10 +478,11 @@ async function reloadControls() {
     controls.forEach(c => {
       const info = data[c.name];
       if (!info) return;
-      c.el.min   = info.minimum;
-      c.el.max   = info.maximum;
-      c.el.value = info.value;
-      c.valEl.textContent = info.value;
+      const s = c.scale || 1;
+      c.el.min   = info.minimum * s;
+      c.el.max   = info.maximum * s;
+      c.el.value = info.value   * s;
+      c.valEl.textContent = info.value * s;
     });
   } catch (e) {
     console.warn('Reload controls error:', e);
@@ -519,6 +523,13 @@ durationEl.addEventListener('input', () => {
   document.getElementById('val-duration').textContent = durationEl.value;
 });
 
+let recordAutoStopTimer = null;
+
+function resetRecordButtons() {
+  document.getElementById('btn-record-start').disabled = false;
+  document.getElementById('btn-record-stop').disabled  = true;
+}
+
 document.getElementById('btn-record-start').addEventListener('click', async () => {
   const duration = Number(durationEl.value);
   try {
@@ -527,23 +538,33 @@ document.getElementById('btn-record-start').addEventListener('click', async () =
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({duration_seconds: duration}),
     });
+    logCapture('Recording started (' + duration + 's)');
     document.getElementById('btn-record-start').disabled = true;
     document.getElementById('btn-record-stop').disabled  = false;
+    // The server auto-stops after `duration`; reset the UI and refresh the
+    // file list when that happens (the server sends no push event).
+    clearTimeout(recordAutoStopTimer);
+    recordAutoStopTimer = setTimeout(() => {
+      logCapture('Recording finished');
+      resetRecordButtons();
+      refreshFiles();
+    }, duration * 1000 + 500);
   } catch (e) {
     logCapture('Record error: ' + e.message, false);
   }
 });
 
 document.getElementById('btn-record-stop').addEventListener('click', async () => {
+  clearTimeout(recordAutoStopTimer);
   try {
-    const data = await apiFetch('/api/record/stop', {method: 'POST'});
-    logCapture('Recorded: ' + data.filename);
-    refreshFiles();
+    await apiFetch('/api/record/stop', {method: 'POST'});
+    logCapture('Recording stopped');
+    // Give the capture thread a moment to flush the SER trailer, then refresh.
+    setTimeout(refreshFiles, 500);
   } catch (e) {
     logCapture(e.message, false);
   }
-  document.getElementById('btn-record-start').disabled = false;
-  document.getElementById('btn-record-stop').disabled  = true;
+  resetRecordButtons();
 });
 
 // ── File Browser ──────────────────────────────────────────────────────────────

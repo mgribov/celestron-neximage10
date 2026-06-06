@@ -217,11 +217,18 @@ class CameraControls:
         return self._get_ctrl_obj(name).value
 
     def list_controls(self) -> dict[str, ControlInfo]:
-        """Return a dict of all available controls keyed by name."""
+        """Return a dict of all available controls keyed by config_name.
+
+        The key is the stable snake_case identifier (e.g. ``gain``,
+        ``exposure_time_absolute``) so callers can both look controls up and
+        PUT them back by the same name. ``ControlInfo.name`` keeps the
+        human-readable label for display.
+        """
         self._require_open()
         result: dict[str, ControlInfo] = {}
         for ctrl in self._device.controls.values():
             try:
+                key = getattr(ctrl, "config_name", None) or ctrl.name
                 info = ControlInfo(
                     name=ctrl.name,
                     value=ctrl.value,
@@ -230,7 +237,7 @@ class CameraControls:
                     step=ctrl.step,
                     default=ctrl.default,
                 )
-                result[ctrl.name] = info
+                result[key] = info
             except Exception as exc:
                 logger.debug("Skipping control %r: %s", ctrl.name, exc)
         return result

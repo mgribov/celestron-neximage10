@@ -55,6 +55,7 @@ class CameraState:
     def __init__(self) -> None:
         self._lock         = threading.Lock()
         self._latest_jpeg  = b""
+        self._latest_frame: Optional[np.ndarray] = None
         self._frame_count  = 0
         self._streaming    = False
         self._recording    = False
@@ -68,6 +69,16 @@ class CameraState:
         with self._lock:
             self._latest_jpeg = jpeg
             self._frame_count += 1
+
+    def push_frame(self, frame: np.ndarray) -> None:
+        """Store the latest raw decoded RGB frame for lossless capture."""
+        with self._lock:
+            self._latest_frame = frame
+
+    def get_frame_array(self) -> Optional[np.ndarray]:
+        """Return the latest raw (uncompressed) RGB frame, or None."""
+        with self._lock:
+            return self._latest_frame
 
     def get_jpeg(self) -> bytes:
         with self._lock:
@@ -115,7 +126,7 @@ def _capture_loop(
     ser_writer: Optional[SERWriter] = None
     record_path: Optional[pathlib.Path] = None
 
-    def maybe_start_recording():
+    def maybe_start_recording(cam):
         nonlocal ser_writer, record_path
         if state._recording and ser_writer is None:
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -123,12 +134,16 @@ def _capture_loop(
             ser_writer = SERWriter(str(record_path), width, height,
                                    color=(pixel_format != "Y800"))
             ser_writer.open()
+            # Freeze WB so the recording has consistent colour (no per-frame
+            # gray-world flicker); the live preview inherits the frozen gains.
+            cam.lock_white_balance(True)
             logger.info("SER recording started: %s", record_path)
 
-    def maybe_stop_recording():
+    def maybe_stop_recording(cam):
         nonlocal ser_writer, record_path
         if ser_writer is not None:
             ser_writer.close()
+            cam.lock_white_balance(False)
             logger.info("SER recording stopped: %s", record_path)
             ser_writer = None
             record_path = None
@@ -143,18 +158,19 @@ def _capture_loop(
 
                 jpeg = encode(frame)
                 state.push_jpeg(jpeg)
+                state.push_frame(frame)
 
-                maybe_start_recording()
+                maybe_start_recording(cam)
                 if ser_writer is not None:
                     ser_writer.write_frame(frame)
 
                 if state._record_stop_event.is_set():
-                    maybe_stop_recording()
+                    maybe_stop_recording(cam)
                     state._recording = False
                     state._record_stop_event.clear()
 
         finally:
-            maybe_stop_recording()
+            maybe_stop_recording(cam)
             state._streaming = False
             logger.info("Capture thread exited")
 
@@ -273,12 +289,11 @@ def create_app(
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         if _state.is_streaming:
-            # Grab the latest MJPEG frame and re-encode as PNG/TIFF/FITS
-            jpeg = _state.get_jpeg()
-            if not jpeg:
+            # Use the latest raw decoded frame so PNG/TIFF/FITS captures stay
+            # lossless (re-encoding the MJPEG would bake in JPEG artifacts).
+            frame = _state.get_frame_array()
+            if frame is None:
                 raise HTTPException(status_code=503, detail="No frame available yet")
-            arr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-            frame = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
         else:
             from camera import Camera
             with Camera(device_path) as cam:

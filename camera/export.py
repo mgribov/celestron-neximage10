@@ -176,7 +176,10 @@ class SERWriter:
         if self._bits == 8:
             data = frame.astype(np.uint8)
         else:
-            data = frame.astype(np.uint16)
+            # Write little-endian explicitly so output is correct regardless of
+            # host byte order; matches the LittleEndian header flag (see
+            # _make_header).
+            data = frame.astype("<u2")
 
         self._file.write(data.tobytes())
         self._frame_count += 1
@@ -195,7 +198,10 @@ class SERWriter:
             b"LUCAM-RECORDER"              # file ID (14 bytes)
             + struct.pack("<i", 0)         # LuID
             + struct.pack("<i", color_id)  # ColorID
-            + struct.pack("<i", 0)         # LittleEndian (0 = big-endian pixel order per spec)
+            # LittleEndian flag for 16-bit pixel data. The SER ecosystem
+            # (SER Player, PIPP) de-facto reads 0 as little-endian, and we
+            # write little-endian data (see write_frame), so 0 is correct.
+            + struct.pack("<i", 0)
             + struct.pack("<i", self._width)
             + struct.pack("<i", self._height)
             + struct.pack("<i", self._bits)

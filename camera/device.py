@@ -61,6 +61,12 @@ class Camera:
         # Software white balance: raw Bayer is green-dominant and this camera
         # exposes no hardware WB control over V4L2, so balance in software.
         self.white_balance = True
+        # When locked, the gray-world gains computed from the first balanced
+        # frame are reused for every subsequent frame. This keeps colour/
+        # brightness consistent across a recording (per-frame gray-world would
+        # otherwise flicker and ruin stacking).
+        self._wb_lock = False
+        self._wb_gains: Optional[tuple[float, float]] = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -141,17 +147,32 @@ class Camera:
 
     # ── Capture ────────────────────────────────────────────────────────────────
 
-    def get_frame(self) -> np.ndarray:
-        """Capture a single frame.
+    def get_frame(self, max_attempts: int = 30) -> np.ndarray:
+        """Capture a single valid frame.
+
+        The driver often returns one or more zero-length / short buffers when a
+        stream first starts; these are skipped until a full-sized frame arrives.
+
+        Args:
+            max_attempts: Maximum frames to pull while waiting for a full one.
 
         Returns:
             RGB image as (H, W, 3) uint8 numpy array.
         """
         self._require_capture()
+        expected = self._expected_bytes()
         with self._capture:
-            for frame in self._capture:
-                return self._decode(bytes(frame))
-        raise RuntimeError("No frame received from device")
+            for attempt, frame in enumerate(self._capture):
+                raw = bytes(frame)
+                if len(raw) == expected:
+                    return self._decode(raw)
+                logger.debug("Skipping short frame (%d/%d bytes)", len(raw), expected)
+                if attempt + 1 >= max_attempts:
+                    break
+        raise RuntimeError(
+            f"No full-sized frame after {max_attempts} attempts "
+            f"(expected {expected} bytes). Check USB connection / passthrough."
+        )
 
     def stream(self) -> Generator[np.ndarray, None, None]:
         """Yield decoded RGB frames indefinitely.
@@ -162,11 +183,21 @@ class Camera:
             RGB image as (H, W, 3) uint8 numpy array per frame.
         """
         self._require_capture()
+        expected = self._expected_bytes()
         with self._capture:
             for frame in self._capture:
-                yield self._decode(bytes(frame))
+                raw = bytes(frame)
+                if len(raw) != expected:
+                    logger.debug("Skipping short frame (%d/%d bytes)", len(raw), expected)
+                    continue
+                yield self._decode(raw)
 
     # ── Internal ───────────────────────────────────────────────────────────────
+
+    def _expected_bytes(self) -> int:
+        """Expected raw frame size in bytes for the current format."""
+        bpp = _FORMAT_INFO.get(self._pixel_format.strip(), (1, False, None))[0]
+        return self._width * self._height * bpp
 
     def _decode(self, raw: bytes) -> np.ndarray:
         """Decode raw V4L2 frame bytes to (H, W, 3) uint8 RGB array."""
@@ -192,8 +223,21 @@ class Camera:
         else:
             return cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
 
-    @staticmethod
-    def _apply_white_balance(rgb: np.ndarray) -> np.ndarray:
+    def lock_white_balance(self, locked: bool = True) -> None:
+        """Freeze (or unfreeze) the gray-world white-balance gains.
+
+        Call with ``locked=True`` before a recording so every frame uses the
+        same R/B gains (computed from the first frame), avoiding per-frame
+        flicker. Unfreezing resets the stored gains so they are recomputed.
+
+        Args:
+            locked: True to freeze gains, False to resume per-frame balancing.
+        """
+        self._wb_lock = locked
+        if not locked:
+            self._wb_gains = None
+
+    def _apply_white_balance(self, rgb: np.ndarray) -> np.ndarray:
         """Gray-world white balance to remove the raw-Bayer green cast.
 
         Scales the red and blue channels so their means match the green
@@ -201,20 +245,30 @@ class Camera:
         over-represented, most reliable channel in a Bayer mosaic. Returns the
         input unchanged if any channel mean is zero (e.g. a black frame).
 
+        When WB is locked (see :meth:`lock_white_balance`), the gains from the
+        first balanced frame are stored and reused for all later frames.
+
         Args:
             rgb: (H, W, 3) uint8 RGB image.
 
         Returns:
             (H, W, 3) uint8 RGB image with R/B balanced against G.
         """
-        mr = float(rgb[..., 0].mean())
-        mg = float(rgb[..., 1].mean())
-        mb = float(rgb[..., 2].mean())
-        if mr <= 0 or mg <= 0 or mb <= 0:
-            return rgb
+        if self._wb_lock and self._wb_gains is not None:
+            r_gain, b_gain = self._wb_gains
+        else:
+            mr = float(rgb[..., 0].mean())
+            mg = float(rgb[..., 1].mean())
+            mb = float(rgb[..., 2].mean())
+            if mr <= 0 or mg <= 0 or mb <= 0:
+                return rgb
+            r_gain, b_gain = mg / mr, mg / mb
+            if self._wb_lock:
+                self._wb_gains = (r_gain, b_gain)
+
         out = rgb.astype(np.float32)
-        out[..., 0] *= mg / mr
-        out[..., 2] *= mg / mb
+        out[..., 0] *= r_gain
+        out[..., 2] *= b_gain
         return np.clip(out, 0, 255).astype(np.uint8)
 
     def _require_open(self) -> None:

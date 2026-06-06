@@ -193,6 +193,9 @@ def record(
 
     with Camera(device_path) as cam:
         cam.set_format(width, height, pixel_format)
+        # Freeze white balance so colour/brightness stay consistent across the
+        # recording (per-frame gray-world would flicker and hurt stacking).
+        cam.lock_white_balance(True)
         with SERWriter(output, width, height, color=(pixel_format != "Y800")) as writer:
             for frame in cam.stream():
                 writer.write_frame(frame)
