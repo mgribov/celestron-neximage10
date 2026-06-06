@@ -256,7 +256,7 @@ def create_app(
         from camera import CameraControls
         try:
             with CameraControls(device_path) as ctrl:
-                if name in ("exposure", "exposure_absolute"):
+                if name in ("exposure", "exposure_absolute", "exposure_time_absolute"):
                     ctrl.set_exposure(body.value)
                 else:
                     ctrl.set_control(name, body.value)

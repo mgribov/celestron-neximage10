@@ -58,6 +58,9 @@ class Camera:
         self._width = 1920
         self._height = 1080
         self._pixel_format = "GRBG"
+        # Software white balance: raw Bayer is green-dominant and this camera
+        # exposes no hardware WB control over V4L2, so balance in software.
+        self.white_balance = True
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -119,6 +122,23 @@ class Camera:
         self._pixel_format = pixel_format
         logger.info("Format set: %dx%d %s", width, height, pixel_format)
 
+        # White balance for Bayer formats: prefer the camera's hardware WB if it
+        # exposes one; otherwise fall back to software gray-world WB in _decode.
+        # Best-effort: a control failure must never break capture.
+        if _FORMAT_INFO.get(pixel_format.strip(), (0, False, None))[1]:
+            try:
+                from camera.controls import CameraControls
+                hardware_wb = CameraControls(device=self._device).enable_auto_white_balance()
+                if hardware_wb:
+                    # Hardware corrects R/B gains, so skip software WB to avoid
+                    # double-correcting.
+                    self.white_balance = False
+                    logger.info("Using hardware white balance; software WB disabled")
+                else:
+                    logger.info("Using software gray-world white balance")
+            except Exception as exc:
+                logger.debug("White-balance setup skipped: %s", exc)
+
     # ── Capture ────────────────────────────────────────────────────────────────
 
     def get_frame(self) -> np.ndarray:
@@ -165,9 +185,37 @@ class Camera:
             arr = (arr >> 8).astype(np.uint8)
 
         if is_bayer:
-            return cv2.cvtColor(arr, cv2_code)
+            rgb = cv2.cvtColor(arr, cv2_code)
+            if self.white_balance:
+                rgb = self._apply_white_balance(rgb)
+            return rgb
         else:
             return cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
+
+    @staticmethod
+    def _apply_white_balance(rgb: np.ndarray) -> np.ndarray:
+        """Gray-world white balance to remove the raw-Bayer green cast.
+
+        Scales the red and blue channels so their means match the green
+        channel's. Green is used as the reference because it is the
+        over-represented, most reliable channel in a Bayer mosaic. Returns the
+        input unchanged if any channel mean is zero (e.g. a black frame).
+
+        Args:
+            rgb: (H, W, 3) uint8 RGB image.
+
+        Returns:
+            (H, W, 3) uint8 RGB image with R/B balanced against G.
+        """
+        mr = float(rgb[..., 0].mean())
+        mg = float(rgb[..., 1].mean())
+        mb = float(rgb[..., 2].mean())
+        if mr <= 0 or mg <= 0 or mb <= 0:
+            return rgb
+        out = rgb.astype(np.float32)
+        out[..., 0] *= mg / mr
+        out[..., 2] *= mg / mb
+        return np.clip(out, 0, 255).astype(np.uint8)
 
     def _require_open(self) -> None:
         if self._device is None:

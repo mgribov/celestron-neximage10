@@ -88,7 +88,7 @@ def list_controls(ctx: click.Context) -> None:
 def set_control(ctx: click.Context, name: str, value: int) -> None:
     """Set a V4L2 control by NAME to VALUE.
 
-    NAME can be the full control name (e.g. exposure_absolute) or
+    NAME can be the full control name (e.g. exposure_time_absolute) or
     an alias: exposure, gain, brightness.
 
     Exposure values are in microseconds and are converted automatically.
@@ -97,7 +97,7 @@ def set_control(ctx: click.Context, name: str, value: int) -> None:
     from camera import CameraControls
     device_path = ctx.obj["device"]
     with CameraControls(device_path) as ctrl:
-        if name in ("exposure", "exposure_absolute"):
+        if name in ("exposure", "exposure_absolute", "exposure_time_absolute"):
             ctrl.set_exposure(value)
             click.echo(f"exposure set to {value} µs")
         else:

@@ -13,16 +13,33 @@ from linuxpy.video.device import Device
 logger = logging.getLogger(__name__)
 
 # Standard V4L2 control names as used by uvcvideo / linuxpy
-CONTROL_EXPOSURE  = "exposure_absolute"   # UVC ExposureTime — absolute, in 100µs units
 CONTROL_GAIN      = "gain"
 CONTROL_BRIGHTNESS = "brightness"
 
-# Human-readable aliases → internal names
+# UVC ExposureTime (absolute, in 100µs units). Kernels disagree on the name:
+# newer ones use "exposure_time_absolute", older ones "exposure_absolute". The
+# actual control is resolved against the device at runtime.
+EXPOSURE_NAMES: tuple[str, ...] = ("exposure_time_absolute", "exposure_absolute")
+
+# Human-readable aliases → internal names. "exposure" is resolved dynamically
+# (see _resolve_name), so it is not listed here.
 ALIASES: dict[str, str] = {
-    "exposure":   CONTROL_EXPOSURE,
     "gain":       CONTROL_GAIN,
     "brightness": CONTROL_BRIGHTNESS,
 }
+
+# Candidate V4L2 control names for automatic white balance. Different UVC
+# drivers / kernels expose this under different names, so we probe all of them.
+AUTO_WB_NAMES: tuple[str, ...] = (
+    "white_balance_temperature_auto",
+    "white_balance_automatic",
+    "auto_white_balance",
+)
+
+# Candidate manual red/blue balance control names, used as a fallback when the
+# camera has no auto-WB toggle.
+RED_BALANCE_NAMES:  tuple[str, ...] = ("red_balance",  "white_balance_red_component")
+BLUE_BALANCE_NAMES: tuple[str, ...] = ("blue_balance", "white_balance_blue_component")
 
 
 class ControlInfo:
@@ -109,11 +126,11 @@ class CameraControls:
         """
         # UVC ExposureAbsolute is in units of 100µs
         value = max(1, round(microseconds / 100))
-        self.set_control(CONTROL_EXPOSURE, value)
+        self.set_control("exposure", value)
 
     def get_exposure(self) -> int:
         """Return current exposure in µs."""
-        return self.get_control(CONTROL_EXPOSURE) * 100
+        return self.get_control("exposure") * 100
 
     def set_gain(self, value: int) -> None:
         self.set_control(CONTROL_GAIN, value)
@@ -127,24 +144,76 @@ class CameraControls:
     def get_brightness(self) -> int:
         return self.get_control(CONTROL_BRIGHTNESS)
 
+    # ── White balance ───────────────────────────────────────────────────────────
+
+    def enable_auto_white_balance(self) -> bool:
+        """Turn on the camera's hardware automatic white balance, if present.
+
+        Raw Bayer data is green-dominant; without white balance the demosaiced
+        image has a heavy green cast. This enables the device's auto-WB control
+        so red/blue gains are corrected in hardware.
+
+        Probes the known auto-WB control names (``AUTO_WB_NAMES``) and enables
+        the first one the device exposes. If no auto toggle exists but manual
+        red/blue balance controls do, those are reset to their defaults as a
+        fallback.
+
+        Returns:
+            True if any white-balance control was applied, else False.
+        """
+        self._require_open()
+        available = self._device.controls
+
+        # Preferred path: a single auto-WB toggle.
+        for name in AUTO_WB_NAMES:
+            if name in available:
+                try:
+                    available[name].value = 1
+                    logger.info("Enabled auto white balance via %r", name)
+                    return True
+                except Exception as exc:
+                    logger.debug("Could not set auto-WB control %r: %s", name, exc)
+
+        # Fallback: reset manual red/blue balance to their neutral defaults.
+        applied = False
+        for names in (RED_BALANCE_NAMES, BLUE_BALANCE_NAMES):
+            for name in names:
+                if name in available:
+                    try:
+                        ctrl = available[name]
+                        ctrl.value = ctrl.default
+                        logger.info("Set %r to default %d (manual WB)", name, ctrl.default)
+                        applied = True
+                    except Exception as exc:
+                        logger.debug("Could not set WB control %r: %s", name, exc)
+                    break
+        if applied:
+            return True
+
+        logger.info(
+            "No hardware white-balance control found "
+            "(camera likely exposes WB via the Vendor Extension Unit only)."
+        )
+        return False
+
     # ── Generic control API ────────────────────────────────────────────────────
 
     def set_control(self, name: str, value: int) -> None:
         """Set a control by name.
 
-        Accepts canonical names (e.g. "exposure_absolute") or aliases
+        Accepts canonical names (e.g. "exposure_time_absolute") or aliases
         (e.g. "exposure").
         """
-        name = ALIASES.get(name, name)
         self._require_open()
+        name = self._resolve_name(name)
         ctrl = self._get_ctrl_obj(name)
         ctrl.value = value
         logger.debug("Set %s = %d", name, value)
 
     def get_control(self, name: str) -> int:
         """Get current value of a control by name."""
-        name = ALIASES.get(name, name)
         self._require_open()
+        name = self._resolve_name(name)
         return self._get_ctrl_obj(name).value
 
     def list_controls(self) -> dict[str, ControlInfo]:
@@ -167,6 +236,21 @@ class CameraControls:
         return result
 
     # ── Internal ───────────────────────────────────────────────────────────────
+
+    def _resolve_name(self, name: str) -> str:
+        """Map an alias or kernel-variant name to an actual device control name.
+
+        Handles the ``exposure`` alias and the exposure_absolute /
+        exposure_time_absolute kernel naming split by checking what the device
+        actually exposes.
+        """
+        name = ALIASES.get(name, name)
+        if name == "exposure" or name in EXPOSURE_NAMES:
+            for candidate in EXPOSURE_NAMES:
+                if candidate in self._device.controls:
+                    return candidate
+            return EXPOSURE_NAMES[0]  # fall through to a clear "not found" error
+        return name
 
     def _get_ctrl_obj(self, name: str):
         try:
